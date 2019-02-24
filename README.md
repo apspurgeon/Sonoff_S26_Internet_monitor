@@ -1,0 +1,1 @@
+Sonoff_S26_Internet_monitor

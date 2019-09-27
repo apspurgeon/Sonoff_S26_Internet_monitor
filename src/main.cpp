@@ -12,7 +12,7 @@
 #include <ESP8266WiFiMulti.h>
 #include <ArduinoOTA.h>
 
-ESP8266WiFiMulti wifiMulti;     // Create an instance of the ESP8266WiFiMulti class, called 'wifiMulti'
+ESP8266WiFiMulti wifiMulti; // Create an instance of the ESP8266WiFiMulti class, called 'wifiMulti'
 
 #define xstr(s) str(s)
 #define str(s) #s
@@ -56,7 +56,14 @@ int restart_count = 0;          //How many times has the sonoff restarted the de
 int total_restart_count = 0;    //Total How many times has the sonoff restarted then device
 int inc_delay = 2000;           //Additional wait period * number of restarts in this fail period
 int total_ping_fails = 0;       //Keep a track of total fails
-int no_restart_localfail = 0;
+int total_norestart_localfail = 0;
+int fails_without_restart = 0;
+int total_fails_without_restart = 0;
+int IP1_fails = 0;
+int IP2_fails = 0;
+int total_IP1_fails = 0;
+int total_IP2_fails = 0;
+int total_cycles = 0;
 
 //Working variables
 int firstping = 0; //Flag for 1st ping
@@ -67,9 +74,38 @@ long delay_working = 0;
 void firstcheck();
 void ping_time();
 void fail_check();
+void StartOTA();
 
 //BLYNK_WRITE(V1);
 WidgetLCD lcd(V1);
+
+BLYNK_WRITE(V10)
+{
+  if (param.asInt() == 1)
+  {
+  // Reset ALL counters
+  restart_count = 0;
+  total_restart_count = 0;
+  total_ping_fails = 0;
+  total_norestart_localfail = 0;
+  total_IP1_fails = 0;
+  total_IP2_fails = 0;
+  total_cycles = 0;
+  IP1_fails = 0;
+  IP2_fails = 0;
+  }
+}
+
+BLYNK_WRITE(V11)
+{
+  if (param.asInt() == 1)
+  {
+  // Reset counters
+  restart_count = 0;
+  IP1_fails = 0;
+  IP2_fails = 0;  
+  }
+}
 
 void setup()
 {
@@ -106,49 +142,13 @@ void setup()
   Serial.println(WiFi.localIP());
   delay(2000);
 
-    ArduinoOTA.onStart([]() {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH) {
-      type = "sketch";
-    } else { // U_SPIFFS
-      type = "filesystem";
-    }
-
-    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-    Serial.println("Start updating " + type);
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) {
-      Serial.println("Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
-      Serial.println("Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
-      Serial.println("Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
-      Serial.println("Receive Failed");
-    } else if (error == OTA_END_ERROR) {
-      Serial.println("End Failed");
-    }
-  });
-  ArduinoOTA.begin();
-
-  Serial.println("OTA Ready");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-  Serial.println("");  
+  StartOTA();
 }
 
 void loop()
 {
   ArduinoOTA.handle();
-  Blynk.run();
+  //Blynk.run();
   firstcheck();
 
   //Wait period between pings
@@ -159,20 +159,28 @@ void loop()
     Blynk.run();
   }
 
-  Serial.print("Current restart count = ");
-  Serial.print(restart_count);
+  Serial.print("Fails without restart");
+  Serial.print(fails_without_restart);
+  Serial.print("Total fails without restart");
+  Serial.print(total_fails_without_restart);  
   Serial.print(",   Total restart count = ");
   Serial.println(total_restart_count);
   Serial.print("Total ping fails = ");
   Serial.println(total_ping_fails);
 
-  Blynk.virtualWrite(V2, restart_count);
-  Blynk.virtualWrite(V3, total_restart_count);
-  Blynk.virtualWrite(V4, total_ping_fails);
-  Blynk.virtualWrite(V5, no_restart_localfail);
+  //both fail - no restart - wifi fail.  External fails, but not enought to restart
+  Blynk.virtualWrite(V2, total_restart_count);      //Number of restarts
+  Blynk.virtualWrite(V3, total_fails_without_restart);  //Cycles where Ping fails not enough to restart
+  Blynk.virtualWrite(V4, total_norestart_localfail);   //Avoided restart as local also failed (Wifi issue?)
+  Blynk.virtualWrite(V5, IP1_fails);
+  Blynk.virtualWrite(V6, IP2_fails);
+  Blynk.virtualWrite(V7, total_IP1_fails);
+  Blynk.virtualWrite(V8, total_IP2_fails);
+  Blynk.virtualWrite(V9, total_cycles);
 
   ping_time();
   fail_check();
+  total_cycles++;
 }
 
 void fail_check()
@@ -190,7 +198,7 @@ void fail_check()
       lcd.clear();
       lcd.print(0, 0, "local ping failed");
       lcd.print(0, 1, "No relay change");
-      no_restart_localfail++;
+      total_norestart_localfail++;
       return;
     }
 
@@ -240,17 +248,31 @@ void ping_time()
 {
   //Ping time
 
-  //Randomise ping
+  //Randomise ping to internet
   if (random(1000) <= 500)
   {
     ping_result = Ping.ping(remote_host);
     Serial.print("Ping :");
     lcd.clear();
     lcd.print(0, 0, "Ping: ");
+
+    if (ping_result == false){
+      IP1_fails++;
+      total_IP1_fails++;
+    }
   }
   else
   {
     ping_result = Ping.ping(remote_host2);
+    Serial.print("Ping :");
+    lcd.clear();
+    lcd.print(0, 0, "Ping: ");
+
+    if (ping_result == false){
+      IP2_fails++;
+      total_IP2_fails++;
+    }
+  
   }
 
   if (ping_result == true)
@@ -288,10 +310,20 @@ void ping_time()
       if (random(1000) <= 500)
       {
         ping_result = Ping.ping(remote_host);
+        
+        if (ping_result == false){
+        IP1_fails++;
+        total_IP1_fails++;
+        }   
       }
       else
       {
         ping_result = Ping.ping(remote_host2);
+        
+        if (ping_result == false){
+        IP2_fails++;
+        total_IP2_fails++;
+        }
       }
 
       if (ping_result == true)
@@ -302,6 +334,7 @@ void ping_time()
         lcd.print(0, 0, "Ping: success");
         restart_count = 0; //Reset the number of restarts
         fail_count = 0;    //Reset the count
+        total_fails_without_restart++;
         return;            //Escape out of Ping function
       }
     }
@@ -309,6 +342,7 @@ void ping_time()
     return; //Escape out of Ping function
   }
 }
+
 void firstcheck()
 {
   if (firstping == 0)
@@ -393,4 +427,58 @@ void firstcheck()
       return;
     }
   }
+}
+
+void StartOTA()
+{
+  ArduinoOTA.onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH)
+    {
+      type = "sketch";
+    }
+    else
+    { // U_SPIFFS
+      type = "filesystem";
+    }
+
+    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+    Serial.println("Start updating " + type);
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR)
+    {
+      Serial.println("Auth Failed");
+    }
+    else if (error == OTA_BEGIN_ERROR)
+    {
+      Serial.println("Begin Failed");
+    }
+    else if (error == OTA_CONNECT_ERROR)
+    {
+      Serial.println("Connect Failed");
+    }
+    else if (error == OTA_RECEIVE_ERROR)
+    {
+      Serial.println("Receive Failed");
+    }
+    else if (error == OTA_END_ERROR)
+    {
+      Serial.println("End Failed");
+    }
+  });
+  ArduinoOTA.begin();
+
+  Serial.println();
+  Serial.println("OTA Ready");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  Serial.println("");
 }
